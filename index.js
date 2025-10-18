@@ -7,50 +7,55 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIO(server);
 
-// Serve static files (index.html, socket.io client, etc.)
 app.use(express.static(__dirname));
 
-// Serve the main HTML
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Peer pairing logic
 let waitingSocket = null;
+const pairs = new Map();
 
 io.on('connection', socket => {
   console.log('User connected:', socket.id);
 
   if (waitingSocket && waitingSocket.connected) {
-    // Pair with waiting user
-    setupPeerEvents(socket, waitingSocket);
-    setupPeerEvents(waitingSocket, socket);
+    pairs.set(socket.id, waitingSocket.id);
+    pairs.set(waitingSocket.id, socket.id);
+    console.log(`Paired ${socket.id} with ${waitingSocket.id}`);
     waitingSocket = null;
   } else {
     waitingSocket = socket;
   }
 
+  socket.on('offer', data => {
+    const peerId = pairs.get(socket.id);
+    if (peerId) io.to(peerId).emit('offer', data);
+  });
+
+  socket.on('answer', data => {
+    const peerId = pairs.get(socket.id);
+    if (peerId) io.to(peerId).emit('answer', data);
+  });
+
+  socket.on('ice-candidate', data => {
+    const peerId = pairs.get(socket.id);
+    if (peerId) io.to(peerId).emit('ice-candidate', data);
+  });
+
   socket.on('disconnect', () => {
     console.log('User disconnected:', socket.id);
+    const peerId = pairs.get(socket.id);
+    if (peerId) {
+      io.to(peerId).emit('peer-disconnected');
+      pairs.delete(peerId);
+    }
+    pairs.delete(socket.id);
     if (waitingSocket === socket) {
       waitingSocket = null;
     }
   });
 });
 
-// Relay signaling messages between paired sockets
-function setupPeerEvents(sender, receiver) {
-  sender.on('offer', data => {
-    receiver.emit('offer', data);
-  });
-  sender.on('answer', data => {
-    receiver.emit('answer', data);
-  });
-  sender.on('ice-candidate', data => {
-    receiver.emit('ice-candidate', data);
-  });
-}
-
-// Use dynamic port for Render
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));

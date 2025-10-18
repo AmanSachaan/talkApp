@@ -112,6 +112,11 @@
         console.error('Error adding ICE candidate:', err);
       }
     });
+
+    socket.on('peer-disconnected', () => {
+      console.log('Peer disconnected');
+      resetState();
+    });
   </script>
 </body>
 </html>
