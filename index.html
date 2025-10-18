@@ -5,12 +5,15 @@
   <style>
     body { font-family: sans-serif; text-align: center; margin-top: 50px; }
     button { padding: 10px 20px; margin: 10px; font-size: 16px; }
+    #status { margin-top: 20px; font-weight: bold; }
   </style>
 </head>
 <body>
   <h2>Connect with a Stranger</h2>
+  <div id="status">Not connected</div>
   <button id="connectBtn">Connect</button>
   <button id="endBtn" disabled>End Call</button>
+  <button id="muteBtn" disabled>Mute</button>
   <audio id="remoteAudio" autoplay></audio>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -18,11 +21,29 @@
     const socket = io();
     const connectBtn = document.getElementById('connectBtn');
     const endBtn = document.getElementById('endBtn');
+    const muteBtn = document.getElementById('muteBtn');
     const remoteAudio = document.getElementById('remoteAudio');
+    const status = document.getElementById('status');
 
     let localStream = null;
     let peerConnection = null;
+    let isMuted = false;
+    let myId = null;
+
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+
+    socket.on('user-id', id => {
+      myId = id;
+      console.log('Your ID:', id);
+    });
+
+    socket.on('paired', peerId => {
+      status.textContent = `In call with: ${peerId}`;
+    });
+
+    socket.on('history', ids => {
+      console.log('Previous connections:', ids);
+    });
 
     function resetState() {
       if (peerConnection) {
@@ -36,21 +57,20 @@
       remoteAudio.srcObject = null;
       connectBtn.disabled = false;
       endBtn.disabled = true;
+      muteBtn.disabled = true;
+      status.textContent = 'Not connected';
     }
 
     function createPeerConnection() {
       peerConnection = new RTCPeerConnection(config);
-
       peerConnection.ontrack = event => {
         remoteAudio.srcObject = event.streams[0];
       };
-
       peerConnection.onicecandidate = event => {
         if (event.candidate) {
           socket.emit('ice-candidate', event.candidate);
         }
       };
-
       localStream.getTracks().forEach(track => {
         peerConnection.addTrack(track, localStream);
       });
@@ -60,11 +80,12 @@
       resetState();
       connectBtn.disabled = true;
       endBtn.disabled = false;
+      muteBtn.disabled = false;
+      status.textContent = 'Connecting...';
 
       try {
         localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         createPeerConnection();
-
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
         socket.emit('offer', offer);
@@ -78,19 +99,27 @@
       resetState();
     };
 
+    muteBtn.onclick = () => {
+      if (!localStream) return;
+      isMuted = !isMuted;
+      localStream.getAudioTracks()[0].enabled = !isMuted;
+      muteBtn.textContent = isMuted ? 'Unmute' : 'Mute';
+      socket.emit(isMuted ? 'mute' : 'unmute');
+    };
+
     socket.on('offer', async offer => {
       resetState();
       try {
         localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         createPeerConnection();
-
         await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
         const answer = await peerConnection.createAnswer();
         await peerConnection.setLocalDescription(answer);
         socket.emit('answer', answer);
-
         connectBtn.disabled = true;
         endBtn.disabled = false;
+        muteBtn.disabled = false;
+        status.textContent = 'In Call';
       } catch (err) {
         console.error('Error handling offer:', err);
         resetState();
@@ -100,6 +129,7 @@
     socket.on('answer', async answer => {
       try {
         await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+        status.textContent = 'In Call';
       } catch (err) {
         console.error('Error setting remote description:', err);
       }
@@ -114,8 +144,16 @@
     });
 
     socket.on('peer-disconnected', () => {
-      console.log('Peer disconnected');
+      status.textContent = 'Stranger disconnected';
       resetState();
+    });
+
+    socket.on('mute', () => {
+      remoteAudio.muted = true;
+    });
+
+    socket.on('unmute', () => {
+      remoteAudio.muted = false;
     });
   </script>
 </body>

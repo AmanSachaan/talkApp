@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const path = require('path');
+const { v4: uuidv4 } = require('uuid');
 const socketIO = require('socket.io');
 
 const app = express();
@@ -8,23 +9,24 @@ const server = http.createServer(app);
 const io = socketIO(server);
 
 app.use(express.static(__dirname));
-
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
 let waitingUsers = [];
 const pairs = new Map();
+const userIds = new Map(); // socket.id → userId
+const history = new Map(); // userId → [previousUserIds]
 
 io.on('connection', socket => {
-  console.log('User connected:', socket.id);
+  const userId = uuidv4();
+  userIds.set(socket.id, userId);
+  socket.emit('user-id', userId);
 
-  // Add to queue and try to pair
   waitingUsers.push(socket);
   tryPairUsers();
 
-  // Relay signaling messages
-  ['offer', 'answer', 'ice-candidate'].forEach(event => {
+  ['offer', 'answer', 'ice-candidate', 'mute', 'unmute'].forEach(event => {
     socket.on(event, data => {
       const peerId = pairs.get(socket.id);
       if (peerId) io.to(peerId).emit(event, data);
@@ -32,13 +34,14 @@ io.on('connection', socket => {
   });
 
   socket.on('disconnect', () => {
-    console.log('User disconnected:', socket.id);
     const peerId = pairs.get(socket.id);
     if (peerId) {
       io.to(peerId).emit('peer-disconnected');
       pairs.delete(peerId);
     }
     pairs.delete(socket.id);
+    const uid = userIds.get(socket.id);
+    userIds.delete(socket.id);
     waitingUsers = waitingUsers.filter(s => s.id !== socket.id);
     if (peerId) {
       const peerSocket = io.sockets.sockets.get(peerId);
@@ -46,7 +49,17 @@ io.on('connection', socket => {
         waitingUsers.push(peerSocket);
         tryPairUsers();
       }
+      const peerUid = userIds.get(peerId);
+      if (uid && peerUid) {
+        if (!history.has(uid)) history.set(uid, []);
+        history.get(uid).push(peerUid);
+      }
     }
+  });
+
+  socket.on('get-history', () => {
+    const uid = userIds.get(socket.id);
+    socket.emit('history', history.get(uid) || []);
   });
 });
 
@@ -56,7 +69,8 @@ function tryPairUsers() {
     const userB = waitingUsers.shift();
     pairs.set(userA.id, userB.id);
     pairs.set(userB.id, userA.id);
-    console.log(`Paired ${userA.id} with ${userB.id}`);
+    userA.emit('paired', userIds.get(userB.id));
+    userB.emit('paired', userIds.get(userA.id));
   }
 }
 
