@@ -1,83 +1,151 @@
+// index.js
+
 const express = require('express');
 const http = require('http');
+const WebSocket = require('ws');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
-const socketIO = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = socketIO(server);
+const wss = new WebSocket.Server({ server });
 
-app.use(express.static(__dirname));
+// Serve the static HTML file (Frontend)
+app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'index.html'));
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-let waitingUsers = [];
-const pairs = new Map();         // socket.id → peer socket.id
-const userIds = new Map();       // socket.id → userId
-const history = new Map();       // userId → [previousUserIds]
+// ----------------------------------------------------------------
+// Stranger Connect Logic
+// ----------------------------------------------------------------
 
-io.on('connection', socket => {
-  const userId = uuidv4();
-  userIds.set(socket.id, userId);
-  socket.emit('user-id', userId);
+// Array to hold clients waiting for a match
+const waitingClients = [];
+// Map to store connected pairs: { client1_socket: client2_socket, client2_socket: client1_socket }
+const pairs = new Map();
 
-  waitingUsers.push(socket);
-  tryPairUsers();
-
-  ['offer', 'answer', 'ice-candidate', 'mute', 'unmute'].forEach(event => {
-    socket.on(event, data => {
-      const peerId = pairs.get(socket.id);
-      if (peerId) io.to(peerId).emit(event, data);
-    });
-  });
-
-  socket.on('disconnect', () => {
-    const peerId = pairs.get(socket.id);
-    if (peerId) {
-      io.to(peerId).emit('peer-disconnected');
-      pairs.delete(peerId);
+/**
+ * Finds a waiting client and connects them, or adds the client to the waiting list.
+ * @param {WebSocket} ws - The connecting client's WebSocket
+ */
+function attemptToPair(ws) {
+    if (waitingClients.length > 0) {
+        // Match found!
+        const partner = waitingClients.shift(); // Get the oldest waiting client
+        
+        // Ensure the partner is still open and not already paired
+        if (partner.readyState === WebSocket.OPEN && !pairs.has(partner)) {
+            pairs.set(ws, partner);
+            pairs.set(partner, ws);
+            
+            // Notify both clients of the connection
+            ws.send(JSON.stringify({ type: 'STATUS', message: 'Connected! Say hello.' }));
+            partner.send(JSON.stringify({ type: 'STATUS', message: 'Connected! Say hello.' }));
+            console.log('New pair established.');
+            return;
+        }
+        // If the old waiting client was invalid, re-try pairing for the current client
+        attemptToPair(ws); 
+    } else {
+        // No one is waiting, so this client waits.
+        waitingClients.push(ws);
+        ws.send(JSON.stringify({ type: 'STATUS', message: 'Waiting for a stranger to connect...' }));
+        console.log('Client waiting for a partner.');
     }
-    pairs.delete(socket.id);
-
-    const uid = userIds.get(socket.id);
-    userIds.delete(socket.id);
-    waitingUsers = waitingUsers.filter(s => s.id !== socket.id);
-
-    if (peerId) {
-      const peerSocket = io.sockets.sockets.get(peerId);
-      if (peerSocket && peerSocket.connected) {
-        waitingUsers.push(peerSocket);
-        tryPairUsers();
-      }
-
-      const peerUid = userIds.get(peerId);
-      if (uid && peerUid) {
-        if (!history.has(uid)) history.set(uid, []);
-        history.get(uid).push(peerUid);
-      }
-    }
-  });
-
-  socket.on('get-history', () => {
-    const uid = userIds.get(socket.id);
-    socket.emit('history', history.get(uid) || []);
-  });
-});
-
-function tryPairUsers() {
-  while (waitingUsers.length >0) {
-    const userA = waitingUsers.shift();
-    const userB = waitingUsers.shift();
-    pairs.set(userA.id, userB.id);
-    pairs.set(userB.id, userA.id);
-    const idA = userIds.get(userA.id);
-    const idB = userIds.get(userB.id);
-    userA.emit('paired', idB);
-    userB.emit('paired', idA);
-  }
 }
 
+/**
+ * Disconnects a client from their current partner.
+ * @param {WebSocket} ws - The client's WebSocket to disconnect
+ */
+function disconnectPair(ws) {
+    const partner = pairs.get(ws);
+
+    if (partner) {
+        // 1. Notify the partner
+        if (partner.readyState === WebSocket.OPEN) {
+            partner.send(JSON.stringify({ type: 'DISCONNECTED', message: 'Your partner disconnected.' }));
+        }
+
+        // 2. Clear both entries from the pairs map
+        pairs.delete(ws);
+        pairs.delete(partner);
+        console.log('Pair disconnected.');
+    }
+}
+
+/**
+ * Handles cleanup when a client completely closes their socket (e.g., closes the browser).
+ * @param {WebSocket} ws - The closing client's WebSocket
+ */
+function cleanupClient(ws) {
+    // 1. Remove from waiting list if they were waiting
+    const index = waitingClients.indexOf(ws);
+    if (index !== -1) {
+        waitingClients.splice(index, 1);
+        console.log('Removed client from waiting list.');
+    }
+    
+    // 2. Disconnect from partner if they were paired
+    disconnectPair(ws);
+}
+
+// WebSocket connection handler
+wss.on('connection', function connection(ws) {
+    console.log('New client connected.');
+    
+    // Attempt to pair the client immediately upon connection
+    attemptToPair(ws);
+
+    // Handle messages from client
+    ws.on('message', function incoming(message) {
+        let data;
+        try {
+            data = JSON.parse(message);
+        } catch (e) {
+            return; // Ignore invalid JSON
+        }
+
+        switch (data.type) {
+            case 'CONNECT':
+                // Request to connect (or reconnect)
+                cleanupClient(ws); // Ensure they aren't paired or waiting
+                attemptToPair(ws);
+                break;
+            case 'DISCONNECT':
+                // Request to disconnect from the current partner
+                disconnectPair(ws);
+                // After disconnecting, automatically put them in the waiting list for a new connection
+                attemptToPair(ws); 
+                break;
+            case 'CHAT':
+                // Forward the chat message to the partner
+                const partner = pairs.get(ws);
+                if (partner && partner.readyState === WebSocket.OPEN) {
+                    partner.send(JSON.stringify({ type: 'CHAT', message: data.message }));
+                }
+                break;
+            default:
+                break;
+        }
+    });
+
+    // Handle client closing connection (browser tab closed, etc.)
+    ws.on('close', function close() {
+        console.log('Client disconnected.');
+        cleanupClient(ws);
+    });
+
+    // Handle connection errors
+    ws.on('error', (err) => {
+        console.error('WebSocket error:', err.message);
+        cleanupClient(ws); // Clean up on error as well
+    });
+});
+
+// Start the HTTP server
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`WebSocket Server running on ws://localhost:${PORT}`);
+});
