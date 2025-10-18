@@ -3,13 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Stranger Connect App</title>
+    <title>Stranger Connect Chat</title>
     <style>
-        body { font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; }
-        #status { font-weight: bold; margin-bottom: 10px; padding: 10px; border: 1px solid #ccc; background-color: #f9f9f9; }
-        #messages { height: 300px; border: 1px solid #eee; overflow-y: scroll; padding: 10px; margin-bottom: 10px; }
-        .user-message { color: blue; }
-        .stranger-message { color: green; }
+        body { font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background-color: #f4f4f9; }
+        h1 { color: #333; text-align: center; }
+        #status { font-weight: bold; margin-bottom: 15px; padding: 10px; border: 1px solid #ccc; background-color: #e0f7fa; border-radius: 4px; text-align: center; }
+        #messages { height: 300px; border: 1px solid #ddd; overflow-y: scroll; padding: 10px; margin-bottom: 10px; background-color: white; border-radius: 4px; }
+        .user-message { color: #007bff; margin: 5px 0; }
+        .stranger-message { color: #28a745; margin: 5px 0; }
+        .system-message { color: #6c757d; font-style: italic; margin: 5px 0; }
+        .controls button { padding: 10px 15px; margin-right: 10px; border: none; border-radius: 4px; cursor: pointer; }
+        #connectButton { background-color: #007bff; color: white; }
+        #disconnectButton { background-color: #dc3545; color: white; }
+        .input-area { display: flex; margin-bottom: 15px; }
+        .input-area input { flex-grow: 1; padding: 10px; border: 1px solid #ccc; border-radius: 4px 0 0 4px; }
+        .input-area button { padding: 10px; background-color: #6c757d; color: white; border: none; border-radius: 0 4px 4px 0; }
+        .input-area button:disabled { background-color: #ccc; cursor: not-allowed; }
     </style>
 </head>
 <body>
@@ -20,18 +29,18 @@
 
     <div id="messages"></div>
 
-    <input type="text" id="messageInput" placeholder="Type a message..." disabled style="width: 80%;">
-    <button onclick="sendMessage()" id="sendButton" disabled>Send</button>
+    <div class="input-area">
+        <input type="text" id="messageInput" placeholder="Type a message..." disabled>
+        <button onclick="sendMessage()" id="sendButton" disabled>Send</button>
+    </div>
 
-    <div style="margin-top: 20px;">
-        <button onclick="connectStranger()" id="connectButton">Connect/Reconnect</button>
+    <div class="controls">
+        <button onclick="connectStranger()" id="connectButton">Connect</button>
         <button onclick="disconnectStranger()" id="disconnectButton" disabled>Disconnect</button>
     </div>
 
     <script>
-        // 🔑 RENDER FIX: Determine protocol based on the current page's protocol
-        // If the page is loaded via HTTPS (Render), use WSS (Secure WebSocket).
-        // Otherwise (localhost), use WS (Insecure WebSocket).
+        // 🔑 RENDER FIX: Dynamically set the protocol (wss for production/Render, ws for local)
         const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
         const host = window.location.host;
         const websocketUrl = `${protocol}://${host}`; 
@@ -42,44 +51,43 @@
         const messagesElement = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
-        const connectButton = document.getElementById('connectButton');
         const disconnectButton = document.getElementById('disconnectButton');
+        const connectButton = document.getElementById('connectButton');
 
-        function logMessage(text, className = '') {
+
+        function logMessage(text, className = 'system-message') {
             const msgDiv = document.createElement('div');
             msgDiv.textContent = text;
-            if (className) {
-                msgDiv.classList.add(className);
-            }
+            msgDiv.classList.add(className);
             messagesElement.appendChild(msgDiv);
-            messagesElement.scrollTop = messagesElement.scrollHeight; // Auto-scroll
+            messagesElement.scrollTop = messagesElement.scrollHeight;
         }
 
-        function setControls(isConnected) {
-            messageInput.disabled = !isConnected;
-            sendButton.disabled = !isConnected;
-            disconnectButton.disabled = !isConnected;
-            // The connect/reconnect button is always enabled for easy connection management
-            // connectButton.disabled = isConnected; 
+        function setControls(isPaired) {
+            messageInput.disabled = !isPaired;
+            sendButton.disabled = !isPaired;
+            disconnectButton.disabled = !isPaired;
+            connectButton.textContent = isPaired ? 'Find New Stranger' : 'Connect';
         }
 
         function connectStranger() {
             if (socket) {
                 // Manually close any existing connection before starting a new one
-                socket.close(); 
+                if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+                    socket.close(); 
+                }
             }
 
-            statusElement.textContent = 'Connecting...';
-            messagesElement.innerHTML = '';
+            statusElement.textContent = 'Connecting to server...';
+            logMessage("[SYSTEM] Starting connection...", 'system-message');
             setControls(false);
 
-            socket = new WebSocket(websocketUrl); // Uses the fixed, dynamic URL
+            // Connect using the secure/dynamic URL
+            socket = new WebSocket(websocketUrl); 
 
             socket.onopen = () => {
-                logMessage("Connection to server established.", 'system-message');
-                // The server will handle the pairing logic
-                // We send a CONNECT signal just in case, but the pairing starts on server connection.
-                socket.send(JSON.stringify({ type: 'CONNECT' })); 
+                logMessage("Connection to server established. Waiting for a match.", 'system-message');
+                // The server automatically starts the pairing process
             };
 
             socket.onmessage = (event) => {
@@ -88,18 +96,21 @@
                 switch (data.type) {
                     case 'STATUS':
                         statusElement.textContent = data.message;
-                        logMessage(`[SYSTEM] ${data.message}`, 'system-message');
+                        logMessage(`[STATUS] ${data.message}`, 'system-message');
+                        // Check if the message indicates a successful pairing
                         if (data.message.includes('Connected')) {
                             setControls(true);
                         } else {
-                            setControls(false);
+                            // Waiting, disconnected, etc.
+                            setControls(false); 
                         }
                         break;
                     case 'DISCONNECTED':
+                        // The partner initiated the disconnection
                         statusElement.textContent = data.message;
-                        logMessage(`[SYSTEM] ${data.message}`, 'system-message');
-                        setControls(false);
-                        // The server will automatically attempt to find a new stranger
+                        logMessage(`[SYSTEM] ${data.message} Looking for a new partner...`, 'system-message');
+                        // The server has already put the user back in the queue
+                        setControls(false); 
                         break;
                     case 'CHAT':
                         logMessage(`Stranger: ${data.message}`, 'stranger-message');
@@ -109,13 +120,14 @@
 
             socket.onclose = () => {
                 statusElement.textContent = 'Disconnected from server.';
-                logMessage("[SYSTEM] Server connection closed. Click Connect/Reconnect to try again.", 'system-message');
+                logMessage("[SYSTEM] Server connection closed. Click Connect to try again.", 'system-message');
                 setControls(false);
             };
 
             socket.onerror = (error) => {
                 console.error("WebSocket Error:", error);
                 statusElement.textContent = 'Connection Error. See console.';
+                logMessage("[ERROR] Could not connect. Check the browser console.", 'system-message');
             };
         }
 
@@ -123,8 +135,10 @@
             if (socket && socket.readyState === WebSocket.OPEN) {
                 // Send a signal to the server to disconnect from the current partner
                 socket.send(JSON.stringify({ type: 'DISCONNECT' }));
+                statusElement.textContent = 'You disconnected. Looking for a new stranger...';
+                logMessage("[SYSTEM] Disconnected from current stranger. Waiting for a new match.", 'system-message');
+                // The server automatically puts the user back in the waiting queue.
             }
-            // The server will handle the pairing of the user with a new stranger
         }
 
         function sendMessage() {
