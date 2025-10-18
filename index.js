@@ -15,23 +15,16 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-// Simple peer pairing logic
+// Peer pairing logic
 let waitingSocket = null;
 
 io.on('connection', socket => {
   console.log('User connected:', socket.id);
 
-  if (waitingSocket) {
+  if (waitingSocket && waitingSocket.connected) {
     // Pair with waiting user
-    socket.on('offer', data => {
-      waitingSocket.emit('offer', data);
-    });
-    socket.on('answer', data => {
-      waitingSocket.emit('answer', data);
-    });
-    socket.on('ice-candidate', data => {
-      waitingSocket.emit('ice-candidate', data);
-    });
+    setupPeerEvents(socket, waitingSocket);
+    setupPeerEvents(waitingSocket, socket);
     waitingSocket = null;
   } else {
     waitingSocket = socket;
@@ -44,6 +37,19 @@ io.on('connection', socket => {
     }
   });
 });
+
+// Relay signaling messages between paired sockets
+function setupPeerEvents(sender, receiver) {
+  sender.on('offer', data => {
+    receiver.emit('offer', data);
+  });
+  sender.on('answer', data => {
+    receiver.emit('answer', data);
+  });
+  sender.on('ice-candidate', data => {
+    receiver.emit('ice-candidate', data);
+  });
+}
 
 // Use dynamic port for Render
 const PORT = process.env.PORT || 3000;
