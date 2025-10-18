@@ -14,9 +14,9 @@ app.get('/', (req, res) => {
 });
 
 let waitingUsers = [];
-const pairs = new Map();
-const userIds = new Map(); // socket.id → userId
-const history = new Map(); // userId → [previousUserIds]
+const pairs = new Map();         // socket.id → peer socket.id
+const userIds = new Map();       // socket.id → userId
+const history = new Map();       // userId → [previousUserIds]
 
 io.on('connection', socket => {
   const userId = uuidv4();
@@ -40,15 +40,18 @@ io.on('connection', socket => {
       pairs.delete(peerId);
     }
     pairs.delete(socket.id);
+
     const uid = userIds.get(socket.id);
     userIds.delete(socket.id);
     waitingUsers = waitingUsers.filter(s => s.id !== socket.id);
+
     if (peerId) {
       const peerSocket = io.sockets.sockets.get(peerId);
       if (peerSocket && peerSocket.connected) {
         waitingUsers.push(peerSocket);
         tryPairUsers();
       }
+
       const peerUid = userIds.get(peerId);
       if (uid && peerUid) {
         if (!history.has(uid)) history.set(uid, []);
@@ -69,8 +72,10 @@ function tryPairUsers() {
     const userB = waitingUsers.shift();
     pairs.set(userA.id, userB.id);
     pairs.set(userB.id, userA.id);
-    userA.emit('paired', userIds.get(userB.id));
-    userB.emit('paired', userIds.get(userA.id));
+    const idA = userIds.get(userA.id);
+    const idB = userIds.get(userB.id);
+    userA.emit('paired', idB);
+    userB.emit('paired', idA);
   }
 }
 
