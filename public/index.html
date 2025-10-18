@@ -29,7 +29,13 @@
     </div>
 
     <script>
-        const websocketUrl = `ws://${window.location.host}`;
+        // 🔑 RENDER FIX: Determine protocol based on the current page's protocol
+        // If the page is loaded via HTTPS (Render), use WSS (Secure WebSocket).
+        // Otherwise (localhost), use WS (Insecure WebSocket).
+        const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+        const host = window.location.host;
+        const websocketUrl = `${protocol}://${host}`; 
+        
         let socket = null;
 
         const statusElement = document.getElementById('status');
@@ -67,7 +73,7 @@
             messagesElement.innerHTML = '';
             setControls(false);
 
-            socket = new WebSocket(websocketUrl);
+            socket = new WebSocket(websocketUrl); // Uses the fixed, dynamic URL
 
             socket.onopen = () => {
                 logMessage("Connection to server established.", 'system-message');
