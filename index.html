@@ -24,14 +24,8 @@
     let peerConnection;
     const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-    connectBtn.onclick = async () => {
-      connectBtn.disabled = true;
-      endBtn.disabled = false;
-
-      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    function createPeerConnection() {
       peerConnection = new RTCPeerConnection(config);
-
-      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
 
       peerConnection.ontrack = event => {
         remoteAudio.srcObject = event.streams[0];
@@ -43,9 +37,25 @@
         }
       };
 
-      const offer = await peerConnection.createOffer();
-      await peerConnection.setLocalDescription(offer);
-      socket.emit('offer', offer);
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+    }
+
+    connectBtn.onclick = async () => {
+      connectBtn.disabled = true;
+      endBtn.disabled = false;
+
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        createPeerConnection();
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        socket.emit('offer', offer);
+      } catch (err) {
+        console.error('Error starting call:', err);
+      }
     };
 
     endBtn.onclick = () => {
@@ -59,38 +69,35 @@
     };
 
     socket.on('offer', async offer => {
-      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      peerConnection = new RTCPeerConnection(config);
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        createPeerConnection();
 
-      localStream.getTracks().forEach(track => peerConnection.addTrack(track, localStream));
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        socket.emit('answer', answer);
 
-      peerConnection.ontrack = event => {
-        remoteAudio.srcObject = event.streams[0];
-      };
-
-      peerConnection.onicecandidate = event => {
-        if (event.candidate) {
-          socket.emit('ice-candidate', event.candidate);
-        }
-      };
-
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      socket.emit('answer', answer);
-      connectBtn.disabled = true;
-      endBtn.disabled = false;
+        connectBtn.disabled = true;
+        endBtn.disabled = false;
+      } catch (err) {
+        console.error('Error handling offer:', err);
+      }
     });
 
     socket.on('answer', async answer => {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+      try {
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+      } catch (err) {
+        console.error('Error setting remote description:', err);
+      }
     });
 
     socket.on('ice-candidate', async candidate => {
       try {
         await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-      } catch (e) {
-        console.error('Error adding received ice candidate', e);
+      } catch (err) {
+        console.error('Error adding ICE candidate:', err);
       }
     });
   </script>
