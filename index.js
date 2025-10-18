@@ -13,21 +13,15 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'index.html'));
 });
 
-let waitingSocket = null;
+let waitingUsers = [];
 const pairs = new Map();
 
 io.on('connection', socket => {
   console.log('User connected:', socket.id);
 
-  // Pair with waiting user or wait
-  if (waitingSocket && waitingSocket.connected) {
-    pairs.set(socket.id, waitingSocket.id);
-    pairs.set(waitingSocket.id, socket.id);
-    console.log(`Paired ${socket.id} with ${waitingSocket.id}`);
-    waitingSocket = null;
-  } else {
-    waitingSocket = socket;
-  }
+  // Add to queue and try to pair
+  waitingUsers.push(socket);
+  tryPairUsers();
 
   // Relay signaling messages
   ['offer', 'answer', 'ice-candidate'].forEach(event => {
@@ -45,11 +39,26 @@ io.on('connection', socket => {
       pairs.delete(peerId);
     }
     pairs.delete(socket.id);
-    if (waitingSocket === socket) {
-      waitingSocket = null;
+    waitingUsers = waitingUsers.filter(s => s.id !== socket.id);
+    if (peerId) {
+      const peerSocket = io.sockets.sockets.get(peerId);
+      if (peerSocket && peerSocket.connected) {
+        waitingUsers.push(peerSocket);
+        tryPairUsers();
+      }
     }
   });
 });
+
+function tryPairUsers() {
+  while (waitingUsers.length >= 2) {
+    const userA = waitingUsers.shift();
+    const userB = waitingUsers.shift();
+    pairs.set(userA.id, userB.id);
+    pairs.set(userB.id, userA.id);
+    console.log(`Paired ${userA.id} with ${userB.id}`);
+  }
+}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
