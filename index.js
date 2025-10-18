@@ -67,7 +67,7 @@ io.on('connection', socket => {
 });
 
 function tryPairUsers() {
-  while (waitingUsers.length >= 2) {
+  while (waitingUsers.length >0) {
     const userA = waitingUsers.shift();
     const userB = waitingUsers.shift();
     pairs.set(userA.id, userB.id);
