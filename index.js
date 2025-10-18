@@ -19,6 +19,7 @@ const pairs = new Map();
 io.on('connection', socket => {
   console.log('User connected:', socket.id);
 
+  // Pair with waiting user or wait
   if (waitingSocket && waitingSocket.connected) {
     pairs.set(socket.id, waitingSocket.id);
     pairs.set(waitingSocket.id, socket.id);
@@ -28,19 +29,12 @@ io.on('connection', socket => {
     waitingSocket = socket;
   }
 
-  socket.on('offer', data => {
-    const peerId = pairs.get(socket.id);
-    if (peerId) io.to(peerId).emit('offer', data);
-  });
-
-  socket.on('answer', data => {
-    const peerId = pairs.get(socket.id);
-    if (peerId) io.to(peerId).emit('answer', data);
-  });
-
-  socket.on('ice-candidate', data => {
-    const peerId = pairs.get(socket.id);
-    if (peerId) io.to(peerId).emit('ice-candidate', data);
+  // Relay signaling messages
+  ['offer', 'answer', 'ice-candidate'].forEach(event => {
+    socket.on(event, data => {
+      const peerId = pairs.get(socket.id);
+      if (peerId) io.to(peerId).emit(event, data);
+    });
   });
 
   socket.on('disconnect', () => {
