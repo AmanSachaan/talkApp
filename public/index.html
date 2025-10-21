@@ -25,7 +25,7 @@
 
     <h1>Stranger Connect</h1>
 
-    <div id="status">Connecting...</div>
+    <div id="status">Welcome! Click Connect to find a stranger.</div>
 
     <div id="messages"></div>
 
@@ -46,6 +46,7 @@
         const websocketUrl = `${protocol}://${host}`; 
         
         let socket = null;
+        let isPaired = false; 
 
         const statusElement = document.getElementById('status');
         const messagesElement = document.getElementById('messages');
@@ -63,31 +64,46 @@
             messagesElement.scrollTop = messagesElement.scrollHeight;
         }
 
-        function setControls(isPaired) {
+        function setControls(pairedStatus, isConnecting = false) {
+            isPaired = pairedStatus; // Update global state
             messageInput.disabled = !isPaired;
             sendButton.disabled = !isPaired;
             disconnectButton.disabled = !isPaired;
+            
             connectButton.textContent = isPaired ? 'Find New Stranger' : 'Connect';
+            connectButton.disabled = isConnecting; // Disable connect button while actively waiting
         }
 
         function connectStranger() {
-            if (socket) {
-                // Manually close any existing connection before starting a new one
-                if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
-                    socket.close(); 
+            // Case 1: Socket is already open (user is waiting or paired and clicks 'Find New Stranger')
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                if (!connectButton.disabled) { // Prevent double clicks
+                    // Send the CONNECT signal to trigger pairing on the server
+                    socket.send(JSON.stringify({ type: 'CONNECT' }));
+                    statusElement.textContent = 'Looking for a stranger...';
+                    logMessage("[SYSTEM] Searching for a new stranger...", 'system-message');
+                    setControls(false, true); // Set to connecting/waiting state
                 }
+                return;
+            }
+            
+            // Case 2: Socket is closed or null (initial connection)
+            
+            if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+                socket.close(); // Close any pending/stale connections
             }
 
             statusElement.textContent = 'Connecting to server...';
-            logMessage("[SYSTEM] Starting connection...", 'system-message');
-            setControls(false);
+            logMessage("[SYSTEM] Starting server connection...", 'system-message');
+            setControls(false, true); // Disable controls while connecting
 
-            // Connect using the secure/dynamic URL
+            // Establish a fresh connection
             socket = new WebSocket(websocketUrl); 
 
             socket.onopen = () => {
-                logMessage("Connection to server established. Waiting for a match.", 'system-message');
-                // The server automatically starts the pairing process
+                logMessage("Connection to server established. Requesting match.", 'system-message');
+                // Send the CONNECT request as soon as the socket is open
+                socket.send(JSON.stringify({ type: 'CONNECT' }));
             };
 
             socket.onmessage = (event) => {
@@ -99,18 +115,18 @@
                         logMessage(`[STATUS] ${data.message}`, 'system-message');
                         // Check if the message indicates a successful pairing
                         if (data.message.includes('Connected')) {
-                            setControls(true);
+                            setControls(true, false); // Paired: enable chat, disable connect button
+                        } else if (data.message.includes('Waiting')) {
+                            setControls(false, true); // Waiting: disable chat, disable connect button
                         } else {
-                            // Waiting, disconnected, etc.
-                            setControls(false); 
+                            setControls(false, false); // Welcome/Disconnected: enable connect button
                         }
                         break;
                     case 'DISCONNECTED':
                         // The partner initiated the disconnection
                         statusElement.textContent = data.message;
-                        logMessage(`[SYSTEM] ${data.message} Looking for a new partner...`, 'system-message');
-                        // The server has already put the user back in the queue
-                        setControls(false); 
+                        logMessage(`[SYSTEM] ${data.message}`, 'system-message');
+                        setControls(false, false); // No longer paired, allow user to click 'Connect'
                         break;
                     case 'CHAT':
                         logMessage(`Stranger: ${data.message}`, 'stranger-message');
@@ -121,29 +137,33 @@
             socket.onclose = () => {
                 statusElement.textContent = 'Disconnected from server.';
                 logMessage("[SYSTEM] Server connection closed. Click Connect to try again.", 'system-message');
-                setControls(false);
+                setControls(false, false); // Allow user to click 'Connect'
             };
 
             socket.onerror = (error) => {
                 console.error("WebSocket Error:", error);
                 statusElement.textContent = 'Connection Error. See console.';
                 logMessage("[ERROR] Could not connect. Check the browser console.", 'system-message');
+                setControls(false, false);
             };
         }
 
         function disconnectStranger() {
-            if (socket && socket.readyState === WebSocket.OPEN) {
+            if (socket && isPaired) { 
                 // Send a signal to the server to disconnect from the current partner
                 socket.send(JSON.stringify({ type: 'DISCONNECT' }));
-                statusElement.textContent = 'You disconnected. Looking for a new stranger...';
-                logMessage("[SYSTEM] Disconnected from current stranger. Waiting for a new match.", 'system-message');
-                // The server automatically puts the user back in the waiting queue.
+                
+                // Set local state immediately to 'disconnected' status
+                statusElement.textContent = 'You disconnected. Click Connect to find a new stranger.';
+                logMessage("[SYSTEM] Disconnected from current stranger.", 'system-message');
+                setControls(false, false); // No longer paired, enable Connect button
+                messagesElement.value = ''; // Clear chat area for fresh start
             }
         }
 
         function sendMessage() {
             const message = messageInput.value.trim();
-            if (message && socket && socket.readyState === WebSocket.OPEN) {
+            if (message && socket && socket.readyState === WebSocket.OPEN && isPaired) {
                 // Send chat message to the server
                 socket.send(JSON.stringify({ type: 'CHAT', message: message }));
                 // Display the message locally
@@ -160,8 +180,8 @@
             }
         });
 
-        // Initial connection attempt on page load
-        connectStranger();
+        // 🔑 FIX: Initial UI state is set, no automatic connection
+        setControls(false, false); // Not paired, Connect button enabled
     </script>
 </body>
 </html>

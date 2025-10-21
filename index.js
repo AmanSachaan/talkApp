@@ -35,7 +35,7 @@ const pairs = new Map();
  * @param {string} message - The content of the message
  */
 function sendMessageToClient(ws, type, message) {
-    if (ws.readyState === WebSocket.OPEN) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type, message }));
     }
 }
@@ -45,6 +45,13 @@ function sendMessageToClient(ws, type, message) {
  * @param {WebSocket} ws - The connecting client's WebSocket
  */
 function attemptToPair(ws) {
+    // 1. Clean up stale/closed clients from the waiting list
+    for (let i = waitingClients.length - 1; i >= 0; i--) {
+        if (waitingClients[i].readyState !== WebSocket.OPEN) {
+            waitingClients.splice(i, 1);
+        }
+    }
+
     if (waitingClients.length > 0) {
         // Match found!
         const partner = waitingClients.shift(); // Get the oldest waiting client
@@ -80,16 +87,15 @@ function disconnectPair(ws) {
 
     if (partner) {
         // 1. Notify the partner
-        sendMessageToClient(partner, 'DISCONNECTED', 'Your partner disconnected.');
+        sendMessageToClient(partner, 'DISCONNECTED', 'Your partner disconnected. Click Connect to find a new stranger.');
         
         // 2. Clear both entries from the pairs map
         pairs.delete(ws);
         pairs.delete(partner);
         console.log('Pair disconnected.');
         
-        // 3. Put the partner back in the waiting queue immediately
-        // This ensures the partner is ready for a new connection.
-        attemptToPair(partner);
+        // 🔑 FIX: Removed the automatic attemptToPair(partner); call.
+        // The partner must now click 'Connect' again to re-enter the queue.
     }
 }
 
@@ -113,8 +119,9 @@ function cleanupClient(ws) {
 wss.on('connection', function connection(ws) {
     console.log('New client connected.');
     
-    // Attempt to pair the client immediately upon connection
-    attemptToPair(ws);
+    // 🔑 FIX: Do NOT attempt to pair immediately on connection.
+    // Send welcome message and wait for the client to click 'Connect'.
+    sendMessageToClient(ws, 'STATUS', 'Welcome! Click Connect to find a stranger.');
 
     // Handle messages from client
     ws.on('message', function incoming(message) {
@@ -135,8 +142,8 @@ wss.on('connection', function connection(ws) {
             case 'DISCONNECT':
                 // Request to disconnect from the current partner
                 disconnectPair(ws);
-                // After disconnecting, automatically put them in the waiting list for a new connection
-                attemptToPair(ws); 
+                // Send a status update to the client that disconnected
+                sendMessageToClient(ws, 'STATUS', 'You disconnected. Click Connect to find a new stranger.');
                 break;
 
             case 'CHAT':
@@ -145,7 +152,7 @@ wss.on('connection', function connection(ws) {
                 if (partner) {
                     sendMessageToClient(partner, 'CHAT', data.message);
                 } else {
-                    sendMessageToClient(ws, 'STATUS', 'You are not currently connected to a partner.');
+                    sendMessageToClient(ws, 'STATUS', 'You are not currently connected to a partner. Click Connect.');
                 }
                 break;
         }
